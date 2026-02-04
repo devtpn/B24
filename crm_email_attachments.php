@@ -11,10 +11,10 @@ define('CRM_EMAIL_ATTACHMENTS_DEBUG', true);
 AddEventHandler('crm', 'OnActivityAdd', 'ExtractEmailAttachments');
 
 /**
- * Конвертирует ID элементов диска в ID файлов b_file
- * Для полей типа 'file' нужны ID из таблицы b_file, а не disk
+ * Конвертирует ID элементов диска в данные для поля типа 'file'
+ * Для полей типа 'file' нужно копировать файл и передавать массив с данными
  */
-function ConvertDiskToFileIds($diskElementIds, $logFile = null)
+function ConvertDiskToFileData($diskElementIds, $logFile = null)
 {
     if (empty($diskElementIds) || !is_array($diskElementIds)) {
         return [];
@@ -23,40 +23,63 @@ function ConvertDiskToFileIds($diskElementIds, $logFile = null)
     // Подключаем модуль диска
     if (!\Bitrix\Main\Loader::includeModule('disk')) {
         if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
-            file_put_contents($logFile, "WARNING: Disk module not loaded, returning original IDs\n", FILE_APPEND);
+            file_put_contents($logFile, "WARNING: Disk module not loaded\n", FILE_APPEND);
         }
-        return $diskElementIds;
+        return [];
     }
     
-    $bFileIds = [];
+    $fileData = [];
     
     foreach ($diskElementIds as $diskId) {
         $diskId = (int)$diskId;
         if ($diskId <= 0) continue;
         
         // Получаем элемент диска
-        $file = \Bitrix\Disk\File::loadById($diskId);
-        if ($file) {
-            // FILE_ID - это ID в таблице b_file
-            $bFileId = $file->getFileId();
-            if ($bFileId > 0) {
-                $bFileIds[] = $bFileId;
-                if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
-                    file_put_contents($logFile, "Converted disk ID $diskId -> b_file ID $bFileId\n", FILE_APPEND);
-                }
+        $diskFile = \Bitrix\Disk\File::loadById($diskId);
+        if (!$diskFile) {
+            if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                file_put_contents($logFile, "WARNING: Disk file $diskId not found\n", FILE_APPEND);
+            }
+            continue;
+        }
+        
+        // FILE_ID - это ID в таблице b_file
+        $bFileId = $diskFile->getFileId();
+        if ($bFileId <= 0) {
+            if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                file_put_contents($logFile, "WARNING: Disk file $diskId has no b_file ID\n", FILE_APPEND);
+            }
+            continue;
+        }
+        
+        // Получаем данные файла из b_file
+        $fileArray = \CFile::GetFileArray($bFileId);
+        if (!$fileArray) {
+            if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                file_put_contents($logFile, "WARNING: b_file $bFileId not found\n", FILE_APPEND);
+            }
+            continue;
+        }
+        
+        // Копируем файл для UF поля (создаём новую запись в b_file)
+        $copiedFileId = \CFile::CopyFile($bFileId);
+        if ($copiedFileId > 0) {
+            $fileData[] = $copiedFileId;
+            if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                file_put_contents($logFile, "Copied file: disk $diskId -> b_file $bFileId -> new b_file $copiedFileId ({$fileArray['ORIGINAL_NAME']})\n", FILE_APPEND);
             }
         } else {
             if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
-                file_put_contents($logFile, "WARNING: Disk file $diskId not found\n", FILE_APPEND);
+                file_put_contents($logFile, "ERROR: Failed to copy b_file $bFileId\n", FILE_APPEND);
             }
         }
     }
     
-    return $bFileIds;
+    return $fileData;
 }
 
 /**
- * Определяет тип UF поля и возвращает правильные ID файлов
+ * Определяет тип UF поля и возвращает правильные данные файлов
  */
 function GetFileIdsForField($entityId, $fieldName, $diskElementIds, $logFile = null)
 {
@@ -76,17 +99,23 @@ function GetFileIdsForField($entityId, $fieldName, $diskElementIds, $logFile = n
     
     $fieldType = $field['USER_TYPE_ID'];
     if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
-        file_put_contents($logFile, "Field $fieldName type: $fieldType, multiple: {$field['MULTIPLE']}\n", FILE_APPEND);
+        file_put_contents($logFile, "Field $fieldName: type=$fieldType, multiple={$field['MULTIPLE']}\n", FILE_APPEND);
     }
     
     // Для disk_file - используем ID элементов диска как есть
     if ($fieldType === 'disk_file') {
+        if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+            file_put_contents($logFile, "Using disk IDs directly for disk_file field\n", FILE_APPEND);
+        }
         return $diskElementIds;
     }
     
-    // Для file - конвертируем в ID из b_file
+    // Для file - копируем файлы и возвращаем новые ID из b_file
     if ($fieldType === 'file') {
-        return ConvertDiskToFileIds($diskElementIds, $logFile);
+        if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+            file_put_contents($logFile, "Converting and copying files for 'file' type field\n", FILE_APPEND);
+        }
+        return ConvertDiskToFileData($diskElementIds, $logFile);
     }
     
     // Для других типов - пробуем как есть
