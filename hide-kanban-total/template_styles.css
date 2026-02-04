@@ -1,0 +1,37 @@
+/**
+ * Скрытие суммы в канбане CRM Битрикс24
+ * 
+ * Путь установки: /local/templates/.default/template_styles.css
+ * 
+ * Если файл уже существует - добавьте содержимое в конец
+ */
+
+/* ============================================
+   Скрыть сумму в канбане CRM
+   ============================================ */
+
+/* Общая сумма колонки */
+.crm-kanban-column-total,
+.crm-kanban-column-total-wrapper {
+    display: none !important;
+}
+
+/* Подзаголовок с суммой */
+.crm-kanban-column-subtitle {
+    display: none !important;
+}
+
+/* Сумма в старом интерфейсе */
+.crm-st-column-total {
+    display: none !important;
+}
+
+/* Сумма в заголовке стадии */
+.crm-kanban-column-title-sum {
+    display: none !important;
+}
+
+/* Итого по воронке */
+.crm-kanban-total-sum {
+    display: none !important;
+}
