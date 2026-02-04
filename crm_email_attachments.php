@@ -15,7 +15,7 @@
  *    - UF_CRM_CONTACT_ATTACHMENTS (для контактов)
  * 
  * @author devtpn
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 AddEventHandler('crm', 'OnActivityAdd', 'ExtractEmailAttachments');
@@ -69,33 +69,30 @@ function ExtractEmailAttachments($id, &$fields)
     }
     
     // Обновляем соответствующую сущность CRM
+    // ВАЖНО: arFields должен быть переменной для передачи по ссылке
     switch ($ownerTypeId) {
         case \CCrmOwnerType::Lead:
+            $arFields = ['UF_CRM_LEAD_ATTACHMENTS' => $fileIds];
             $entity = new \CCrmLead(false);
-            $entity->Update($ownerId, [
-                'UF_CRM_LEAD_ATTACHMENTS' => $fileIds
-            ], true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
             break;
             
         case \CCrmOwnerType::Deal:
+            $arFields = ['UF_CRM_DEAL_ATTACHMENTS' => $fileIds];
             $entity = new \CCrmDeal(false);
-            $entity->Update($ownerId, [
-                'UF_CRM_DEAL_ATTACHMENTS' => $fileIds
-            ], true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
             break;
             
         case \CCrmOwnerType::Contact:
+            $arFields = ['UF_CRM_CONTACT_ATTACHMENTS' => $fileIds];
             $entity = new \CCrmContact(false);
-            $entity->Update($ownerId, [
-                'UF_CRM_CONTACT_ATTACHMENTS' => $fileIds
-            ], true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
             break;
             
         case \CCrmOwnerType::Company:
+            $arFields = ['UF_CRM_COMPANY_ATTACHMENTS' => $fileIds];
             $entity = new \CCrmCompany(false);
-            $entity->Update($ownerId, [
-                'UF_CRM_COMPANY_ATTACHMENTS' => $fileIds
-            ], true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
             break;
     }
 }
