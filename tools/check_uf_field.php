@@ -6,6 +6,12 @@
  * Или через браузер: https://your-site.ru/local/tools/check_uf_field.php
  */
 
+// Определяем DOCUMENT_ROOT для CLI
+$_SERVER['DOCUMENT_ROOT'] = realpath(dirname(__FILE__) . '/../../..');
+if (!$_SERVER['DOCUMENT_ROOT'] || !file_exists($_SERVER['DOCUMENT_ROOT'] . '/bitrix')) {
+    $_SERVER['DOCUMENT_ROOT'] = '/home/bitrix/www';
+}
+
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
 \Bitrix\Main\Loader::includeModule('crm');
