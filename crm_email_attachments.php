@@ -3,7 +3,7 @@
  * Автоматическое извлечение вложений из входящих писем CRM
  * Поддержка: Лиды, Сделки, Контакты
  * 
- * @version 2.2.0 - использование Bitrix API
+ * @version 2.3.0 - только SQL (D7 API не работает с UF полями)
  */
 
 define('CRM_EMAIL_ATTACHMENTS_DEBUG', true);
@@ -21,12 +21,12 @@ function _log($msg) {
     file_put_contents($f, date('Y-m-d H:i:s') . " $msg\n", FILE_APPEND);
 }
 
-// Конфигурация: ownerTypeId => [entityClass, fieldName]
+// Конфигурация: ownerTypeId => [table, fieldName]
 function getEntityConfig() {
     return [
-        1 => [\Bitrix\Crm\LeadTable::class, 'UF_CRM_LEAD_ATTACHMENTS'],
-        2 => [\Bitrix\Crm\DealTable::class, 'UF_CRM_DEAL_ATTACHMENTS'],
-        3 => [\Bitrix\Crm\ContactTable::class, 'UF_CRM_CONTACT_ATTACHMENTS'],
+        1 => ['b_uts_crm_lead', 'UF_CRM_LEAD_ATTACHMENTS'],
+        2 => ['b_uts_crm_deal', 'UF_CRM_DEAL_ATTACHMENTS'],
+        3 => ['b_uts_crm_contact', 'UF_CRM_CONTACT_ATTACHMENTS'],
     ];
 }
 
@@ -55,7 +55,7 @@ function ExtractEmailAttachments($id, &$fields)
         return;
     }
     
-    [$entityClass, $fieldName] = $config[$ownerTypeId];
+    [$table, $fieldName] = $config[$ownerTypeId];
     _log("Processing: type=$ownerTypeId, id=$ownerId, files=" . count($diskIds));
     
     // Копируем файлы disk -> b_file
@@ -76,32 +76,17 @@ function ExtractEmailAttachments($id, &$fields)
         return;
     }
     
-    // Сохраняем через D7 API
-    $result = $entityClass::update($ownerId, [$fieldName => $fileIds]);
+    // Сохраняем через SQL (UF поля хранятся как сериализованный массив)
+    $conn = \Bitrix\Main\Application::getConnection();
+    $serialized = $conn->getSqlHelper()->forSql(serialize($fileIds));
     
-    if ($result->isSuccess()) {
-        _log("Saved " . count($fileIds) . " files via D7 API");
+    $exists = $conn->query("SELECT VALUE_ID FROM $table WHERE VALUE_ID = $ownerId")->fetch();
+    
+    if ($exists) {
+        $conn->query("UPDATE $table SET $fieldName = '$serialized' WHERE VALUE_ID = $ownerId");
     } else {
-        _log("D7 API error: " . implode(', ', $result->getErrorMessages()));
-        
-        // Fallback: прямой SQL
-        $conn = \Bitrix\Main\Application::getConnection();
-        $table = $entityClass::getUfId() ? 'b_uts_' . strtolower(str_replace('\\', '_', $entityClass::getUfId())) : null;
-        
-        // Определяем таблицу по типу сущности
-        $tables = [1 => 'b_uts_crm_lead', 2 => 'b_uts_crm_deal', 3 => 'b_uts_crm_contact'];
-        $table = $tables[$ownerTypeId] ?? null;
-        
-        if ($table) {
-            $serialized = $conn->getSqlHelper()->forSql(serialize($fileIds));
-            $exists = $conn->query("SELECT VALUE_ID FROM $table WHERE VALUE_ID = $ownerId")->fetch();
-            
-            if ($exists) {
-                $conn->query("UPDATE $table SET $fieldName = '$serialized' WHERE VALUE_ID = $ownerId");
-            } else {
-                $conn->query("INSERT INTO $table (VALUE_ID, $fieldName) VALUES ($ownerId, '$serialized')");
-            }
-            _log("Saved via SQL fallback");
-        }
+        $conn->query("INSERT INTO $table (VALUE_ID, $fieldName) VALUES ($ownerId, '$serialized')");
     }
+    
+    _log("Saved " . count($fileIds) . " files to $table");
 }
