@@ -2,7 +2,7 @@
 /**
  * Автоматическое извлечение вложений из входящих писем CRM
  * 
- * @version 1.3.0 - поддержка полей типа file (конвертация disk -> b_file)
+ * @version 1.4.0 - использование USER_FIELD_MANAGER + проверка сохранения
  */
 
 // Включаем логирование для отладки (потом можно отключить)
@@ -231,70 +231,100 @@ function ExtractEmailAttachments($id, &$fields)
         file_put_contents($logFile, "Processing: OwnerType=$ownerTypeId, OwnerId=$ownerId, DiskFiles=" . print_r($diskFileIds, true) . "\n", FILE_APPEND);
     }
     
-    // Обновляем соответствующую сущность CRM
-    $result = false;
-    $errorMsg = '';
+    // Определяем параметры в зависимости от типа сущности
+    $entityId = '';
+    $fieldName = '';
     
     switch ($ownerTypeId) {
         case 1: // Lead
+            $entityId = 'CRM_LEAD';
             $fieldName = 'UF_CRM_LEAD_ATTACHMENTS';
-            $fileIds = GetFileIdsForField('CRM_LEAD', $fieldName, $diskFileIds, $logFile);
-            if ($fileIds === null) break;
-            
-            $arFields = [$fieldName => $fileIds];
-            $entity = new \CCrmLead(false);
-            $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
-            if (!$result && !empty($entity->LAST_ERROR)) {
-                $errorMsg = $entity->LAST_ERROR;
-            }
             break;
-            
         case 2: // Deal
+            $entityId = 'CRM_DEAL';
             $fieldName = 'UF_CRM_DEAL_ATTACHMENTS';
-            $fileIds = GetFileIdsForField('CRM_DEAL', $fieldName, $diskFileIds, $logFile);
-            if ($fileIds === null) break;
-            
-            $arFields = [$fieldName => $fileIds];
-            $entity = new \CCrmDeal(false);
-            $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
-            if (!$result && !empty($entity->LAST_ERROR)) {
-                $errorMsg = $entity->LAST_ERROR;
-            }
             break;
-            
         case 3: // Contact
+            $entityId = 'CRM_CONTACT';
             $fieldName = 'UF_CRM_CONTACT_ATTACHMENTS';
-            $fileIds = GetFileIdsForField('CRM_CONTACT', $fieldName, $diskFileIds, $logFile);
-            if ($fileIds === null) break;
-            
-            $arFields = [$fieldName => $fileIds];
-            $entity = new \CCrmContact(false);
-            $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
-            if (!$result && !empty($entity->LAST_ERROR)) {
-                $errorMsg = $entity->LAST_ERROR;
-            }
             break;
-            
         case 4: // Company
+            $entityId = 'CRM_COMPANY';
             $fieldName = 'UF_CRM_COMPANY_ATTACHMENTS';
-            $fileIds = GetFileIdsForField('CRM_COMPANY', $fieldName, $diskFileIds, $logFile);
-            if ($fileIds === null) break;
-            
-            $arFields = [$fieldName => $fileIds];
-            $entity = new \CCrmCompany(false);
-            $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
-            if (!$result && !empty($entity->LAST_ERROR)) {
-                $errorMsg = $entity->LAST_ERROR;
-            }
             break;
+        default:
+            if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                file_put_contents($logFile, "SKIP: Unknown owner type $ownerTypeId\n\n", FILE_APPEND);
+            }
+            return;
+    }
+    
+    // Получаем ID файлов для поля
+    $fileIds = GetFileIdsForField($entityId, $fieldName, $diskFileIds, $logFile);
+    if ($fileIds === null || empty($fileIds)) {
+        if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
+            file_put_contents($logFile, "SKIP: No file IDs to save\n\n", FILE_APPEND);
+        }
+        return;
     }
     
     if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
+        file_put_contents($logFile, "Saving file IDs: " . print_r($fileIds, true) . "\n", FILE_APPEND);
+    }
+    
+    // Метод 1: Прямое обновление через USER_FIELD_MANAGER
+    global $USER_FIELD_MANAGER;
+    
+    $result = $USER_FIELD_MANAGER->Update($entityId, $ownerId, [$fieldName => $fileIds]);
+    
+    if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
         $status = $result ? 'SUCCESS' : 'FAILED';
-        file_put_contents($logFile, "Update result: $status\n", FILE_APPEND);
-        if ($errorMsg) {
-            file_put_contents($logFile, "Error: $errorMsg\n", FILE_APPEND);
+        file_put_contents($logFile, "USER_FIELD_MANAGER->Update result: $status\n", FILE_APPEND);
+    }
+    
+    // Проверяем что значение сохранилось
+    $savedValues = $USER_FIELD_MANAGER->GetUserFields($entityId, $ownerId, LANGUAGE_ID);
+    $savedValue = isset($savedValues[$fieldName]['VALUE']) ? $savedValues[$fieldName]['VALUE'] : null;
+    
+    if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
+        file_put_contents($logFile, "Saved value check: " . print_r($savedValue, true) . "\n", FILE_APPEND);
+    }
+    
+    // Если не сохранилось - пробуем альтернативный метод через SQL
+    if (empty($savedValue)) {
+        if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
+            file_put_contents($logFile, "Value not saved, trying direct SQL update...\n", FILE_APPEND);
         }
+        
+        // Получаем информацию о поле для определения таблицы
+        $rsField = \CUserTypeEntity::GetList([], [
+            'ENTITY_ID' => $entityId,
+            'FIELD_NAME' => $fieldName
+        ]);
+        $fieldInfo = $rsField->Fetch();
+        
+        if ($fieldInfo && $fieldInfo['MULTIPLE'] == 'Y') {
+            // Для множественных полей - таблица b_utm_*
+            $utmTable = 'b_uts_' . strtolower($entityId);
+            $utmMultiTable = 'b_utm_' . strtolower($entityId);
+            
+            // Сначала удаляем старые значения
+            $connection = \Bitrix\Main\Application::getConnection();
+            $connection->query("DELETE FROM {$utmMultiTable} WHERE VALUE_ID = {$ownerId} AND FIELD_ID = {$fieldInfo['ID']}");
+            
+            // Вставляем новые
+            foreach ($fileIds as $fileId) {
+                $fileId = (int)$fileId;
+                $connection->query("INSERT INTO {$utmMultiTable} (VALUE_ID, FIELD_ID, VALUE_INT) VALUES ({$ownerId}, {$fieldInfo['ID']}, {$fileId})");
+            }
+            
+            if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                file_put_contents($logFile, "Direct SQL insert completed for " . count($fileIds) . " files\n", FILE_APPEND);
+            }
+        }
+    }
+    
+    if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
         file_put_contents($logFile, "\n", FILE_APPEND);
     }
 }
