@@ -2,13 +2,99 @@
 /**
  * Автоматическое извлечение вложений из входящих писем CRM
  * 
- * @version 1.2.0 - добавлено логирование для отладки
+ * @version 1.3.0 - поддержка полей типа file (конвертация disk -> b_file)
  */
 
 // Включаем логирование для отладки (потом можно отключить)
 define('CRM_EMAIL_ATTACHMENTS_DEBUG', true);
 
 AddEventHandler('crm', 'OnActivityAdd', 'ExtractEmailAttachments');
+
+/**
+ * Конвертирует ID элементов диска в ID файлов b_file
+ * Для полей типа 'file' нужны ID из таблицы b_file, а не disk
+ */
+function ConvertDiskToFileIds($diskElementIds, $logFile = null)
+{
+    if (empty($diskElementIds) || !is_array($diskElementIds)) {
+        return [];
+    }
+    
+    // Подключаем модуль диска
+    if (!\Bitrix\Main\Loader::includeModule('disk')) {
+        if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+            file_put_contents($logFile, "WARNING: Disk module not loaded, returning original IDs\n", FILE_APPEND);
+        }
+        return $diskElementIds;
+    }
+    
+    $bFileIds = [];
+    
+    foreach ($diskElementIds as $diskId) {
+        $diskId = (int)$diskId;
+        if ($diskId <= 0) continue;
+        
+        // Получаем элемент диска
+        $file = \Bitrix\Disk\File::loadById($diskId);
+        if ($file) {
+            // FILE_ID - это ID в таблице b_file
+            $bFileId = $file->getFileId();
+            if ($bFileId > 0) {
+                $bFileIds[] = $bFileId;
+                if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                    file_put_contents($logFile, "Converted disk ID $diskId -> b_file ID $bFileId\n", FILE_APPEND);
+                }
+            }
+        } else {
+            if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+                file_put_contents($logFile, "WARNING: Disk file $diskId not found\n", FILE_APPEND);
+            }
+        }
+    }
+    
+    return $bFileIds;
+}
+
+/**
+ * Определяет тип UF поля и возвращает правильные ID файлов
+ */
+function GetFileIdsForField($entityId, $fieldName, $diskElementIds, $logFile = null)
+{
+    // Получаем информацию о поле
+    $rsField = \CUserTypeEntity::GetList([], [
+        'ENTITY_ID' => $entityId,
+        'FIELD_NAME' => $fieldName
+    ]);
+    
+    $field = $rsField->Fetch();
+    if (!$field) {
+        if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+            file_put_contents($logFile, "ERROR: Field $fieldName not found in $entityId\n", FILE_APPEND);
+        }
+        return null;
+    }
+    
+    $fieldType = $field['USER_TYPE_ID'];
+    if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+        file_put_contents($logFile, "Field $fieldName type: $fieldType, multiple: {$field['MULTIPLE']}\n", FILE_APPEND);
+    }
+    
+    // Для disk_file - используем ID элементов диска как есть
+    if ($fieldType === 'disk_file') {
+        return $diskElementIds;
+    }
+    
+    // Для file - конвертируем в ID из b_file
+    if ($fieldType === 'file') {
+        return ConvertDiskToFileIds($diskElementIds, $logFile);
+    }
+    
+    // Для других типов - пробуем как есть
+    if ($logFile && CRM_EMAIL_ATTACHMENTS_DEBUG) {
+        file_put_contents($logFile, "WARNING: Unknown field type $fieldType, trying original IDs\n", FILE_APPEND);
+    }
+    return $diskElementIds;
+}
 
 function ExtractEmailAttachments($id, &$fields)
 {
@@ -51,37 +137,37 @@ function ExtractEmailAttachments($id, &$fields)
     }
     
     // Ищем вложения в разных полях (зависит от версии Битрикса)
-    $fileIds = null;
+    $diskFileIds = null;
     
     // Вариант 1: STORAGE_ELEMENT_IDS
     if (!empty($fields['STORAGE_ELEMENT_IDS'])) {
-        $fileIds = $fields['STORAGE_ELEMENT_IDS'];
+        $diskFileIds = $fields['STORAGE_ELEMENT_IDS'];
         if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
-            file_put_contents($logFile, "Found STORAGE_ELEMENT_IDS: " . print_r($fileIds, true) . "\n", FILE_APPEND);
+            file_put_contents($logFile, "Found STORAGE_ELEMENT_IDS: " . print_r($diskFileIds, true) . "\n", FILE_APPEND);
         }
     }
     
     // Вариант 2: FILES
-    if (empty($fileIds) && !empty($fields['FILES'])) {
-        $fileIds = $fields['FILES'];
+    if (empty($diskFileIds) && !empty($fields['FILES'])) {
+        $diskFileIds = $fields['FILES'];
         if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
-            file_put_contents($logFile, "Found FILES: " . print_r($fileIds, true) . "\n", FILE_APPEND);
+            file_put_contents($logFile, "Found FILES: " . print_r($diskFileIds, true) . "\n", FILE_APPEND);
         }
     }
     
     // Вариант 3: BINDINGS с файлами
-    if (empty($fileIds) && !empty($fields['BINDINGS'])) {
+    if (empty($diskFileIds) && !empty($fields['BINDINGS'])) {
         if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
             file_put_contents($logFile, "Found BINDINGS: " . print_r($fields['BINDINGS'], true) . "\n", FILE_APPEND);
         }
     }
     
     // Вариант 4: Получаем вложения через API после создания
-    if (empty($fileIds) && $id > 0) {
+    if (empty($diskFileIds) && $id > 0) {
         $activity = \CCrmActivity::GetByID($id, false);
         if ($activity) {
             if (!empty($activity['STORAGE_ELEMENT_IDS'])) {
-                $fileIds = $activity['STORAGE_ELEMENT_IDS'];
+                $diskFileIds = $activity['STORAGE_ELEMENT_IDS'];
             }
             if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
                 file_put_contents($logFile, "Activity from DB: " . print_r($activity, true) . "\n", FILE_APPEND);
@@ -90,12 +176,12 @@ function ExtractEmailAttachments($id, &$fields)
     }
     
     // Если это сериализованная строка - десериализуем
-    if (is_string($fileIds)) {
-        $fileIds = @unserialize($fileIds);
+    if (is_string($diskFileIds)) {
+        $diskFileIds = @unserialize($diskFileIds);
     }
     
     // Проверяем что получили массив с файлами
-    if (empty($fileIds) || !is_array($fileIds)) {
+    if (empty($diskFileIds) || !is_array($diskFileIds)) {
         if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
             file_put_contents($logFile, "SKIP: No attachments found\n\n", FILE_APPEND);
         }
@@ -113,39 +199,73 @@ function ExtractEmailAttachments($id, &$fields)
     }
     
     if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
-        file_put_contents($logFile, "Processing: OwnerType=$ownerTypeId, OwnerId=$ownerId, Files=" . print_r($fileIds, true) . "\n", FILE_APPEND);
+        file_put_contents($logFile, "Processing: OwnerType=$ownerTypeId, OwnerId=$ownerId, DiskFiles=" . print_r($diskFileIds, true) . "\n", FILE_APPEND);
     }
     
     // Обновляем соответствующую сущность CRM
     $result = false;
+    $errorMsg = '';
     
     switch ($ownerTypeId) {
         case 1: // Lead
-            $arFields = ['UF_CRM_LEAD_ATTACHMENTS' => $fileIds];
+            $fieldName = 'UF_CRM_LEAD_ATTACHMENTS';
+            $fileIds = GetFileIdsForField('CRM_LEAD', $fieldName, $diskFileIds, $logFile);
+            if ($fileIds === null) break;
+            
+            $arFields = [$fieldName => $fileIds];
             $entity = new \CCrmLead(false);
             $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            if (!$result && !empty($entity->LAST_ERROR)) {
+                $errorMsg = $entity->LAST_ERROR;
+            }
             break;
             
         case 2: // Deal
-            $arFields = ['UF_CRM_DEAL_ATTACHMENTS' => $fileIds];
+            $fieldName = 'UF_CRM_DEAL_ATTACHMENTS';
+            $fileIds = GetFileIdsForField('CRM_DEAL', $fieldName, $diskFileIds, $logFile);
+            if ($fileIds === null) break;
+            
+            $arFields = [$fieldName => $fileIds];
             $entity = new \CCrmDeal(false);
             $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            if (!$result && !empty($entity->LAST_ERROR)) {
+                $errorMsg = $entity->LAST_ERROR;
+            }
             break;
             
         case 3: // Contact
-            $arFields = ['UF_CRM_CONTACT_ATTACHMENTS' => $fileIds];
+            $fieldName = 'UF_CRM_CONTACT_ATTACHMENTS';
+            $fileIds = GetFileIdsForField('CRM_CONTACT', $fieldName, $diskFileIds, $logFile);
+            if ($fileIds === null) break;
+            
+            $arFields = [$fieldName => $fileIds];
             $entity = new \CCrmContact(false);
             $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            if (!$result && !empty($entity->LAST_ERROR)) {
+                $errorMsg = $entity->LAST_ERROR;
+            }
             break;
             
         case 4: // Company
-            $arFields = ['UF_CRM_COMPANY_ATTACHMENTS' => $fileIds];
+            $fieldName = 'UF_CRM_COMPANY_ATTACHMENTS';
+            $fileIds = GetFileIdsForField('CRM_COMPANY', $fieldName, $diskFileIds, $logFile);
+            if ($fileIds === null) break;
+            
+            $arFields = [$fieldName => $fileIds];
             $entity = new \CCrmCompany(false);
             $result = $entity->Update($ownerId, $arFields, true, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+            if (!$result && !empty($entity->LAST_ERROR)) {
+                $errorMsg = $entity->LAST_ERROR;
+            }
             break;
     }
     
     if (CRM_EMAIL_ATTACHMENTS_DEBUG) {
-        file_put_contents($logFile, "Update result: " . ($result ? 'SUCCESS' : 'FAILED') . "\n\n", FILE_APPEND);
+        $status = $result ? 'SUCCESS' : 'FAILED';
+        file_put_contents($logFile, "Update result: $status\n", FILE_APPEND);
+        if ($errorMsg) {
+            file_put_contents($logFile, "Error: $errorMsg\n", FILE_APPEND);
+        }
+        file_put_contents($logFile, "\n", FILE_APPEND);
     }
 }
