@@ -3,7 +3,7 @@
  * Автоматическое извлечение вложений из входящих писем CRM
  * Поддержка: Лиды, Сделки, Контакты
  * 
- * @version 2.3.0 - только SQL (D7 API не работает с UF полями)
+ * @version 2.4.0 - добавление к существующим файлам (не перезапись)
  */
 
 define('CRM_EMAIL_ATTACHMENTS_DEBUG', true);
@@ -59,34 +59,49 @@ function ExtractEmailAttachments($id, &$fields)
     _log("Processing: type=$ownerTypeId, id=$ownerId, files=" . count($diskIds));
     
     // Копируем файлы disk -> b_file
-    $fileIds = [];
+    $newFileIds = [];
     foreach ($diskIds as $diskId) {
         $diskFile = \Bitrix\Disk\File::loadById((int)$diskId);
         if (!$diskFile) continue;
         
         $copiedId = \CFile::CopyFile($diskFile->getFileId());
         if ($copiedId > 0) {
-            $fileIds[] = $copiedId;
+            $newFileIds[] = $copiedId;
             _log("Copied: disk $diskId -> b_file $copiedId");
         }
     }
     
-    if (empty($fileIds)) {
+    if (empty($newFileIds)) {
         _log("ERROR: no files copied");
         return;
     }
     
-    // Сохраняем через SQL (UF поля хранятся как сериализованный массив)
     $conn = \Bitrix\Main\Application::getConnection();
-    $serialized = $conn->getSqlHelper()->forSql(serialize($fileIds));
     
-    $exists = $conn->query("SELECT VALUE_ID FROM $table WHERE VALUE_ID = $ownerId")->fetch();
+    // Получаем существующие файлы
+    $existingFileIds = [];
+    $row = $conn->query("SELECT $fieldName FROM $table WHERE VALUE_ID = $ownerId")->fetch();
     
-    if ($exists) {
+    if ($row && !empty($row[$fieldName])) {
+        $existingFileIds = @unserialize($row[$fieldName]);
+        if (!is_array($existingFileIds)) {
+            $existingFileIds = [];
+        }
+        _log("Existing files: " . count($existingFileIds));
+    }
+    
+    // Объединяем существующие и новые файлы
+    $allFileIds = array_merge($existingFileIds, $newFileIds);
+    $allFileIds = array_unique($allFileIds); // убираем дубликаты
+    
+    // Сохраняем
+    $serialized = $conn->getSqlHelper()->forSql(serialize($allFileIds));
+    
+    if ($row) {
         $conn->query("UPDATE $table SET $fieldName = '$serialized' WHERE VALUE_ID = $ownerId");
     } else {
         $conn->query("INSERT INTO $table (VALUE_ID, $fieldName) VALUES ($ownerId, '$serialized')");
     }
     
-    _log("Saved " . count($fileIds) . " files to $table");
+    _log("Saved " . count($allFileIds) . " files (+" . count($newFileIds) . " new) to $table");
 }
