@@ -42,6 +42,13 @@ EventManager::getInstance()->addEventHandler(
         $phone  = $params['PHONE_NUMBER'] ?? '';
         $callId = $params['CALL_ID'] ?? '';
 
+        // Временный лог для отладки — удалить после проверки
+        file_put_contents(
+            $_SERVER['DOCUMENT_ROOT'] . '/missed_call_debug.log',
+            date('Y-m-d H:i:s') . ' | phone=' . $phone . ' | params=' . print_r($params, true) . "\n",
+            FILE_APPEND
+        );
+
         if (empty($phone)) return;
 
         Loader::includeModule('crm');
