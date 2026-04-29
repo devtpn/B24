@@ -19,7 +19,7 @@ class MyEventProvider extends \Bitrix\Rest\Event\ProviderOAuth
             file_put_contents(
                 $logFile,
                 date('Y-m-d H:i:s') . ' | url=' . $url . ' | event=' . $eventName
-                . ' | data=' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n",
+                . ' | full_query_data=' . json_encode($item['query']['QUERY_DATA'], JSON_UNESCAPED_UNICODE) . "\n",
                 FILE_APPEND
             );
 
