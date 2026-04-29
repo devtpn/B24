@@ -11,18 +11,22 @@ class MyEventProvider extends \Bitrix\Rest\Event\ProviderOAuth
 
         foreach ($queryData as $key => $item)
         {
-            if (preg_match('/192\.168\./', $item['query']['QUERY_URL']))
+            // Лог ВСЕХ событий без фильтра по URL
+            $eventName = $item['query']['QUERY_DATA']['event'] ?? '';
+            $data      = $item['query']['QUERY_DATA']['data'] ?? [];
+            $url       = $item['query']['QUERY_URL'] ?? '';
+
+            file_put_contents(
+                $logFile,
+                date('Y-m-d H:i:s') . ' | url=' . $url . ' | event=' . $eventName
+                . ' | data=' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n",
+                FILE_APPEND
+            );
+
+            if (preg_match('/192\.168\./', $url))
             {
                 $eventName = $item['query']['QUERY_DATA']['event'] ?? '';
                 $data      = $item['query']['QUERY_DATA']['data'] ?? [];
-
-                // Лог для отладки
-                file_put_contents(
-                    $logFile,
-                    date('Y-m-d H:i:s') . ' | event=' . $eventName
-                    . ' | data=' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n",
-                    FILE_APPEND
-                );
 
                 // Обработка завершения звонка — ищем пропущенные
                 if ($eventName === 'ONEXTERNALCALLEND') {
