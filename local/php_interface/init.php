@@ -85,3 +85,13 @@ class MyEventProvider extends \Bitrix\Rest\Event\ProviderOAuth
 \Bitrix\Rest\Event\Sender::setProvider(MyEventProvider::instance());
 
 require_once __DIR__ . '/include/crm_missed_call_lead.php';
+
+// Ловим добавление записи в таймлайн
+\AddEventHandler('crm', 'OnCrmTimelineItemAdd', function($fields) {
+    $logFile = $_SERVER['DOCUMENT_ROOT'] . '/missed_call_debug.log';
+    file_put_contents(
+        $logFile,
+        date('Y-m-d H:i:s') . " | OnCrmTimelineItemAdd | " . json_encode($fields, JSON_UNESCAPED_UNICODE) . "\n",
+        FILE_APPEND
+    );
+});
