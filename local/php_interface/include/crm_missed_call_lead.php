@@ -38,7 +38,16 @@ function crmFindOpenLeadByPhone(string $phone)
     return false;
 }
 
-// Ловим добавление активности (звонка) в CRM
+// Старый стиль — именно его использует itigrix
+\AddEventHandler('crm', 'OnCrmActivityAdd', function($fields) use ($logFile) {
+    file_put_contents(
+        $logFile,
+        date('Y-m-d H:i:s') . " | AddEventHandler OnCrmActivityAdd | fields=" . print_r($fields, true) . "\n",
+        FILE_APPEND
+    );
+});
+
+// Новый стиль на всякий случай
 EventManager::getInstance()->addEventHandler(
     'crm',
     'OnCrmActivityAdd',
