@@ -13,13 +13,58 @@ class MyEventProvider extends \Bitrix\Rest\Event\ProviderOAuth
         {
             if (preg_match('/192\.168\./', $item['query']['QUERY_URL']))
             {
-                // Лог всех событий для отладки — удалить после определения нужного события
+                $eventName = $item['query']['QUERY_DATA']['event'] ?? '';
+                $data      = $item['query']['QUERY_DATA']['data'] ?? [];
+
+                // Лог для отладки
                 file_put_contents(
                     $logFile,
-                    date('Y-m-d H:i:s') . ' | event=' . ($item['query']['QUERY_DATA']['event'] ?? 'none')
-                    . ' | data=' . json_encode($item['query']['QUERY_DATA'], JSON_UNESCAPED_UNICODE) . "\n",
+                    date('Y-m-d H:i:s') . ' | event=' . $eventName
+                    . ' | data=' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n",
                     FILE_APPEND
                 );
+
+                // Обработка завершения звонка — ищем пропущенные
+                if ($eventName === 'ONEXTERNALCALLEND') {
+                    $phone      = $data['PHONE_NUMBER'] ?? '';
+                    $callId     = $data['CALL_ID'] ?? '';
+                    $duration   = (int)($data['CALL_DURATION'] ?? 0);
+                    $statusCode = (int)($data['CALL_FAILED_CODE'] ?? 0);
+
+                    // Пропущенный = длительность 0 или статус не 200
+                    if (!empty($phone) && ($duration === 0 || $statusCode !== 200)) {
+                        \Bitrix\Main\Loader::includeModule('crm');
+
+                        $closedStatuses = ['CONVERTED', 'JUNK'];
+                        $res = \CCrmLead::GetList(
+                            ['DATE_CREATE' => 'DESC'],
+                            ['PHONE' => $phone, 'CHECK_PERMISSIONS' => 'N'],
+                            false,
+                            ['nTopCount' => 1],
+                            ['ID', 'STATUS_ID']
+                        );
+                        $existingLead = $res->Fetch();
+                        $hasOpenLead  = $existingLead && !in_array($existingLead['STATUS_ID'], $closedStatuses);
+
+                        if (!$hasOpenLead) {
+                            $lead = new \CCrmLead(false);
+                            $lead->Add([
+                                'TITLE'              => 'Пропущенный звонок ' . $phone,
+                                'PHONE'              => [['VALUE' => $phone, 'VALUE_TYPE' => 'WORK']],
+                                'SOURCE_ID'          => 'CALL',
+                                'SOURCE_DESCRIPTION' => 'Пропущенный звонок. ID: ' . $callId,
+                                'STATUS_ID'          => 'NEW',
+                                'CHECK_PERMISSIONS'  => 'N',
+                            ]);
+
+                            file_put_contents($logFile,
+                                date('Y-m-d H:i:s') . " | lead created for $phone\n", FILE_APPEND);
+                        } else {
+                            file_put_contents($logFile,
+                                date('Y-m-d H:i:s') . " | open lead exists for $phone, skipped\n", FILE_APPEND);
+                        }
+                    }
+                }
 
                 $http->post($item['query']['QUERY_URL'], $item['query']['QUERY_DATA']);
                 unset($queryData[$key]);
